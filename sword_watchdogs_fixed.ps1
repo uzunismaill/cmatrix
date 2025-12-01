@@ -3,7 +3,7 @@
 # ==========================================
 
 # 1. AYARLAR: Video dosyanızın adı
-$VideoDosyaAdi = "Welcome to the Game - Hacking Alert - Napsilon (720p, h264, youtube).mp4"
+$VideoDosyaAdi = "intro.mp4"
 
 # --- PART 1: AKILLI VIDEO OYNATICI ---
 function Play-VideoIntro {
