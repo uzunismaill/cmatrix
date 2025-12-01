@@ -1,25 +1,85 @@
-# ---------------------------
-# sword_watchdogs_v4 - Part 1/3
-# Helper functions, MP3 player, console save/restore
-# SAVE THIS FILE AS UTF-8 BEFORE RUNNING
-# ---------------------------
+# ==========================================
+# Sword Watchdogs Fixed PowerShell Script
+$VideoDosyaAdi = "Welcome to the Game - Hacking Alert - Napsilon (720p, h264, youtube).mp4"
 
-# Ensure proper UTF-8 for block characters and Turkish text
+# --- PART 1: VIDEO INTRO (WPF GUI) ---
+function Play-VideoIntro {
+    param([string]$VideoName)
+    
+    $videoPath = Join-Path $PSScriptRoot $VideoName
+    
+    if (-not (Test-Path $videoPath)) { 
+        Write-Warning "Video dosyası bulunamadı: $videoPath"
+        Start-Sleep -Seconds 2
+        return 
+    }
+
+    try {
+        Add-Type -AssemblyName PresentationCore, PresentationFramework, WindowsBase, System.Windows.Forms
+    } catch {
+        Write-Warning "WPF Kütüphaneleri yüklenemedi. Video atlanıyor."
+        return
+    }
+
+   
+    $xaml = @"
+    <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+            Title="HACKING_ALERT" Height="600" Width="800"
+            WindowStyle="None" ResizeMode="NoResize" Background="Black" Topmost="True" WindowState="Maximized">
+        <Grid>
+            <MediaElement Name="MyPlayer" Source="$videoPath" LoadedBehavior="Play" Stretch="Uniform" Volume="1"/>
+        </Grid>
+    </Window>
+"@
+
+    try {
+        $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($xaml))
+        $window = [System.Windows.Markup.XamlReader]::Load($reader)
+
+        $player = $window.FindName("MyPlayer")
+        $player.Add_MediaEnded({ $window.Close() })
+        $player.Add_MediaFailed({ $window.Close() })
+        $window.Add_MouseLeftButtonDown({ $window.Close() })
+
+        $null = $window.ShowDialog()
+    } catch {
+        Write-Warning "Video penceresi oluşturulamadı."
+    }
+}
+
+
+
+Play-VideoIntro -VideoName $VideoDosyaAdi
+
+# ==========================================
+# --- PART 2: CONSOLE MATRIX RAIN EFFECT ---
+# ==========================================
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
 
-Set-StrictMode -Off
+Set-StrictMode -Version 2
 
 if ($null -eq $host.UI.RawUI.WindowSize) {
-    Write-Warning "This script should be run inside PowerShell.exe or Windows Terminal."
+    Write-Warning "Lütfen bu scripti PowerShell.exe veya Windows Terminal içinde çalıştırın."
     return
 }
 
-# ---------------------------
-# Console helpers
-# ---------------------------
+$global:stopRequested = $false
+$null = Register-EngineEvent PowerShell.Exiting -Action { $global:stopRequested = $true }
+
+
+$script:Width = [int]$host.UI.RawUI.WindowSize.Width
+$script:Height = [int]$host.UI.RawUI.WindowSize.Height
+
 function Set-Cursor {
     param([int]$X, [int]$Y)
-    if ($X -ge 0 -and $X -lt $script:Width -and $Y -ge 0 -and $Y -lt $script:Height) {
+   
+    $w = [int]$script:Width
+    $h = [int]$script:Height
+    if ($X -ge 0 -and $X -lt $w -and $Y -ge 0 -and $Y -lt $h) {
         $host.UI.RawUI.CursorPosition = New-Object System.Management.Automation.Host.Coordinates ($X, $Y)
     }
 }
@@ -31,14 +91,20 @@ function Write-Centered {
         [int]$Delay = 0
     )
     if (-not $Lines -or $Lines.Count -eq 0) { return }
-    $startY = [Math]::Floor(([Math]::Max(0, $script:Height - $Lines.Length)) / 2)
-    for ($i = 0; $i -lt $Lines.Length; $i++) {
-        $line = $Lines[$i] -replace "`r",""
-        # Truncate if longer than width to avoid positioning exception
-        if ($line.Length -gt $script:Width) { $line = $line.Substring(0, $script:Width) }
-        $startX = [Math]::Floor(([Math]::Max(0, $script:Width - $line.Length)) / 2)
-        Set-Cursor $startX ($startY + $i)
-        Write-Host $line -ForegroundColor $Color
+
+    $h = [int]$script:Height
+    $w = [int]$script:Width
+
+    $startY = [Math]::Floor(($h - $Lines.Length) / 2)
+    foreach ($rawLine in $Lines) {
+        $line = $rawLine -replace "[\u200B\uFEFF\u3164]", ''
+        $line = $line.TrimEnd()
+        if ($line.Length -gt $w) { $line = $line.Substring(0, $w) }
+        $startX = [Math]::Floor(($w - $line.Length) / 2)
+        if ($startX -lt 0) { $startX = 0 }
+        Set-Cursor $startX $startY
+        try { Write-Host $line -ForegroundColor $Color } catch { Write-Host $line }
+        $startY++
         if ($Delay -gt 0) { Start-Sleep -Milliseconds $Delay }
     }
 }
@@ -61,37 +127,22 @@ function Split-Text {
     return $lines
 }
 
-# ---------------------------
-# MP3 playback helpers (MediaPlayer)
-# - Use ${fileName} interpolation to avoid parser issues
-# ---------------------------
+
 function Start-MP3 {
     param([string]$fileName, [switch]$Loop)
     $path = Join-Path $PSScriptRoot $fileName
-    if (-not (Test-Path $path)) {
-        Write-Warning "${fileName} not found in script folder."
-        return $null
-    }
+    if (-not (Test-Path $path)) { return $null }
 
-    # Load PresentationCore once
-    Add-Type -AssemblyName presentationCore
+    try { Add-Type -AssemblyName presentationCore } catch { return $null }
 
     $player = New-Object System.Windows.Media.MediaPlayer
-    try {
-        $player.Open([Uri]$path)
-    } catch {
-        Write-Warning "Failed to open ${fileName}: $_"
-        return $null
-    }
+    try { $player.Open([Uri]$path) } catch { return $null }
 
     if ($Loop) {
-        # Register event to loop playback. We don't capture the subscription object here
-        Register-ObjectEvent $player MediaEnded -Action {
-            try { $this.Position = [TimeSpan]::Zero; $this.Play() } catch {}
-        } | Out-Null
+        $null = Register-ObjectEvent $player MediaEnded -Action { try { $this.Position = [TimeSpan]::Zero; $this.Play() } catch {} }
     }
 
-    try { $player.Play() } catch { Write-Warning "Couldn't play ${fileName}: $_" }
+    try { $player.Play() } catch {}
     return $player
 }
 
@@ -100,14 +151,10 @@ function Stop-MP3 {
     if ($null -ne $player) {
         try { $player.Stop() } catch {}
         try { $player.Close() } catch {}
-        # Also try to unregister events - best effort (if we had stored them we'd remove explicit)
     }
 }
 
-# ---------------------------
-# Simple glitch helper: randomly replace characters
-# intensity = lower -> more glitches
-# ---------------------------
+
 function Glitch-Lines {
     param([string[]]$Lines, [int]$intensity = 8)
     if (-not $Lines) { return @() }
@@ -116,7 +163,6 @@ function Glitch-Lines {
         $chars = $L.ToCharArray()
         for ($i = 0; $i -lt $chars.Length; $i++) {
             if ((Get-Random -Maximum $intensity) -eq 0) {
-                # printable ascii substitution
                 $chars[$i] = [char](Get-Random -Minimum 33 -Maximum 126)
             }
         }
@@ -125,207 +171,97 @@ function Glitch-Lines {
     return $out
 }
 
-# ---------------------------
-# Save console state for restore in finally
-# ---------------------------
+
 $oldBG = $host.UI.RawUI.BackgroundColor
 $oldFG = $host.UI.RawUI.ForegroundColor
 try { $oldCursorVisible = $host.UI.RawUI.CursorVisible } catch { $oldCursorVisible = $true }
 
-$script:Width = $host.UI.RawUI.WindowSize.Width
-$script:Height = $host.UI.RawUI.WindowSize.Height
 
-# ---------------------------
-# Quick local test helper (prints debug only if env var set)
-# ---------------------------
-function Debug-Log {
-    param([string]$msg)
-    if ($env:SW_DEBUG -eq "1") {
-        Write-Host "[DEBUG] $msg" -ForegroundColor DarkCyan
+$bootLines = @(
+    "BOOT: Kernel initializing...",
+    "BOOT: Loading modules [auth,net,crypto]...",
+    "SECURITY: Verifying security sectors...",
+    "CRYPTO: Decrypting firmware fragments...",
+    "NETWORK: Establishing tunnel to 198.51.100.23...",
+    "NETWORK: Route established. Latency=18ms",
+    "AV: Signatures bypassed...",
+    "SYSTEM: Handshake complete. Ready."
+)
+
+function Play-BootSequence {
+    param([int]$speedMs = 200)
+    Clear-Host
+    foreach ($l in $bootLines) {
+        Write-Host $l -ForegroundColor DarkGray
+        Start-Sleep -Milliseconds $speedMs
+        if ($global:stopRequested) { return }
     }
+    Start-Sleep -Milliseconds 300
 }
 
-# End of Part 1/3
-Write-Host "Part 1/3 loaded. Next: Part 2/3 (frames & intro flow) incoming..." -ForegroundColor Cyan
-# ---------------------------
-# sword_watchdogs_v4 - Part 2/3
-# Skull frames + intro animation flow (laugh sync + glitch)
-# ---------------------------
 
-# ASCII skull frames (each frame is an array of lines)
-$skullFrame0 = @"
-      ███████████████
-   ████░░░░░░░░░░░░████
-  ██░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░█▀▀▀▀▀▀▀▀█░░░░░░░██
-██░░░░░█  ●  ●  █░░░░░░░██
-██░░░░░█   ▄▄   █░░░░░░░██
-██░░░░░█▄▄▄▄▄▄▄▄█░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-  ██░░░░░░░░░░░░░░░░░░██
-   ████░░░░░░░░░░░░████
-      ███████████████
-"@ -split "`n"
-
-$skullFrame1 = @"
-      ███████████████
-   ████░░░░░░░░░░░░████
-  ██░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░█▀▀▀▀▀▀▀▀█░░░░░░░██
-██░░░░░█  ●  ●  █░░░░░░░██
-██░░░░░█   ▄    █░░░░░░░██
-██░░░░░█▄▄▄▄▄▄▄▄█░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-  ██░░░░░░░░░░░░░░░░░░██
-   ████░░░░░░░░░░░░████
-      ███████████████
-"@ -split "`n"
-
-$skullFrame2 = @"
-      ███████████████
-   ████░░░░░░░░░░░░████
-  ██░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░█▀▀▀▀▀▀▀▀█░░░░░░░██
-██░░░░░█  ●  ●  █░░░░░░░██
-██░░░░░█  ▄▄▄▄▄ █░░░░░░░██
-██░░░░░█▄▄▄▄▄▄▄▄█░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-  ██░░░░░░░░░░░░░░░░░░██
-   ████░░░░░░░░░░░░████
-      ███████████████
-"@ -split "`n"
-
-$skullFrame3 = @"
-      ███████████████
-   ████░░░░░░░░░░░░████
-  ██░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░░░░░░░░░░░░░░░░░░██
-██░░░░░█▀▀▀▀▀▀▀▀█░░░░░░░██
-██░░░░░█  ●  ●  █░░░░░░░██
-██░░░░░█   ▄    █░░░░░░░██
-██░░░░░█▄▄▄▄▄▄▄▄█░░░░░░░██
-██░░░░░░▀▀▀▀▀▀▀▀░░░░░░░░██
- ██░░░░░░░░░░░░░░░░░░░░██
-  ██░░░░░░░░░░░░░░░░░░██
-   ████░░░░░░░░░░░░████
-      ███████████████
-"@ -split "`n"
-
-$skullFrames = @($skullFrame0, $skullFrame1, $skullFrame2, $skullFrame3)
-
-# Defensive check
-if (-not $skullFrames -or $skullFrames.Count -eq 0) {
-    Write-Warning "Skull frames not loaded correctly. Aborting intro animation."
-    return
-}
-
-# Intro animation flow
-function Play-Intro {
-    param(
-        [int]$durationSeconds = 4
-    )
-    # Start laugh sound
-    $introPlayer = Start-MP3 "sword_sound.mp3"
-    $end = (Get-Date).AddSeconds($durationSeconds)
-
-    while ((Get-Date) -lt $end) {
-        # compute a wave index for smoother jaw movement
-        $ms = (Get-Date).Millisecond
-        $idx = [int]((($ms / 150) % 6))
-        switch ($idx) {
-            0 { $frame = $skullFrames[0] }
-            1 { $frame = $skullFrames[1] }
-            2 { $frame = $skullFrames[2] }
-            3 { $frame = $skullFrames[3] }
-            4 { $frame = $skullFrames[2] }
-            default { $frame = $skullFrames[1] }
-        }
-
-        # eye flash occasionally
-        $eyeColor = if ((Get-Random -Maximum 6) -eq 0) { "Red" } else { "DarkGray" }
-
-        # sometimes glitch
-        if ((Get-Random -Maximum 10) -lt 2) {
-            $gl = Glitch-Lines $frame 6
-            Write-Centered $gl $eyeColor 10
-        } else {
-            Write-Centered $frame $eyeColor 10
-        }
-
-        Start-Sleep -Milliseconds 110
-        Clear-Host
-    }
-
-    # stop intro sound (if still playing)
-    if ($introPlayer) { Stop-MP3 $introPlayer }
-}
-
-# Expose Intro function for the main flow (Part 3 will call Play-Intro)
-Write-Host "Part 2/3 loaded: skull frames and Play-Intro() ready." -ForegroundColor Cyan
-# ---------------------------
-# sword_watchdogs_v4 - Part 3/3
-# Final stage: access screen + matrix rain
-# ---------------------------
-
-# Show access effect (red for DENIED, green for GRANTED)
 function Show-Access {
     param([switch]$Granted)
-
     $text = if ($Granted) { "ACCESS GRANTED" } else { "ACCESS DENIED" }
     $color = if ($Granted) { "Green" } else { "Red" }
-
-    for ($i = 0; $i -lt 4; $i++) {
-        $lines = Glitch-Lines (Split-Text $text 40) 4
-        Write-Centered $lines $color 30
-        Start-Sleep -Milliseconds 200
+    
+    
+    $w = [int]$script:Width
+    
+    for ($i=0; $i -lt 5; $i++) {
+        $lines = Glitch-Lines (Split-Text $text ([int]($w/2))) 3
         Clear-Host
+        Write-Centered $lines $color 40
+        Start-Sleep -Milliseconds 220
     }
-
-    Write-Centered (Split-Text $text 40) $color
-    Start-Sleep -Seconds 2
-    Clear-Host
+    Start-Sleep -Seconds 1
 }
 
-# Matrix Rain (same as before but cleaned)
+# ---- Matrix Rain
 function Start-MatrixRain {
     $charSet = @('0','1')
     $columns = @{}
-    $maxColumns = [Math]::Max(1, [Math]::Floor($script:Width / 3))
+    
+    # İlk genişlik/yükseklik ataması
+    $script:Width = [int]$host.UI.RawUI.WindowSize.Width
+    $script:Height = [int]$host.UI.RawUI.WindowSize.Height
 
-    $rain = Start-MP3 "matrix_rain.mp3" -Loop
+    $maxColumns = [Math]::Max(1, [Math]::Floor([int]$script:Width / 3))
+    
+    $rainPlayer = Start-MP3 "matrix_rain.mp3" -Loop
 
-    while ($true) {
-        $currentWidth = $host.UI.RawUI.WindowSize.Width
-        $currentHeight = $host.UI.RawUI.WindowSize.Height
+    $miniMsgs = @(
+        "NEXUS: Connection alive",
+        "PROXY: Chain active",
+        "PING: 12ms",
+        "FIREWALL: Bypassed",
+        "PAYLOAD: Uploading..."
+    )
+
+    while (-not $global:stopRequested) {
+        $currentWidth = [int]$host.UI.RawUI.WindowSize.Width
+        $currentHeight = [int]$host.UI.RawUI.WindowSize.Height
+
+        # Pencere boyutu değişirse güncelle
         if ($currentWidth -ne $script:Width -or $currentHeight -ne $script:Height) {
             $script:Width = $currentWidth
             $script:Height = $currentHeight
             Clear-Host
         }
+        
+        # Değişkenleri yerel, güvenli integerlara alalım
+        $w = [int]$script:Width
+        $h = [int]$script:Height
 
         if ($columns.Count -lt $maxColumns -and (Get-Random -Maximum 10) -lt 4) {
-            $x = Get-Random -Minimum 0 -Maximum $script:Width
+            $x = Get-Random -Minimum 0 -Maximum $w
             if (-not $columns.ContainsKey($x)) {
                 $columns[$x] = [PSCustomObject]@{
-                    YHead=0; YFade=0;
-                    Length=Get-Random -Minimum ($script:Height/3) -Maximum ($script:Height-2);
-                    Speed=Get-Random -Minimum 0 -Maximum 2;
-                    Counter=0
+                    YHead = 0
+                    YFade = 0
+                    Length = Get-Random -Minimum ([Math]::Max(3, [int]($h/4))) -Maximum ($h-2)
+                    Speed = Get-Random -Minimum 0 -Maximum 2
+                    Counter = 0
                 }
             }
         }
@@ -337,28 +273,28 @@ function Start-MatrixRain {
             $col.Counter = 0
 
             $c = $charSet[(Get-Random -Maximum $charSet.Count)]
-            if ($col.YHead -lt $script:Height) {
+            if ($col.YHead -lt $h) {
                 Set-Cursor $x $col.YHead
-                [Console]::ForegroundColor="White"
+                [Console]::ForegroundColor = "White"
                 [Console]::Write($c)
             }
 
             $greenY = $col.YHead - 1
             if ($greenY -ge 0) {
                 Set-Cursor $x $greenY
-                [Console]::ForegroundColor="Green"
+                [Console]::ForegroundColor = "Green"
                 [Console]::Write($charSet[(Get-Random -Maximum $charSet.Count)])
             }
 
             $darkY = $col.YHead - 2
             if ($darkY -ge 0) {
                 Set-Cursor $x $darkY
-                [Console]::ForegroundColor="DarkGreen"
+                [Console]::ForegroundColor = "DarkGreen"
                 [Console]::Write($charSet[(Get-Random -Maximum $charSet.Count)])
             }
 
             if ($col.YHead -ge $col.Length) {
-                if ($col.YFade -lt $script:Height) {
+                if ($col.YFade -lt $h) {
                     Set-Cursor $x $col.YFade
                     [Console]::Write(" ")
                 }
@@ -366,53 +302,55 @@ function Start-MatrixRain {
             }
 
             $col.YHead++
-            if ($col.YFade -ge $script:Height) { $remove += $x }
+            if ($col.YFade -ge $h) { $remove += $x }
         }
 
         foreach ($r in $remove) { $columns.Remove($r) }
-        Start-Sleep -Milliseconds 35
+
+        if ((Get-Random -Maximum 100) -lt 4) {
+            $msg = $miniMsgs[(Get-Random -Maximum $miniMsgs.Count)]
+            
+            
+            
+            $maxX = [Math]::Max(2, ($w - 30))
+            $maxY = [Math]::Max(3, ($h - 4))
+            
+            $rx = Get-Random -Minimum 2 -Maximum $maxX
+            $ry = Get-Random -Minimum 2 -Maximum $maxY
+            
+            Set-Cursor $rx $ry
+            Write-Host $msg -ForegroundColor Cyan
+        }
+
+        Start-Sleep -Milliseconds 38
     }
+
+    if ($rainPlayer) { Stop-MP3 $rainPlayer }
 }
 
-# === MAIN EXECUTION FLOW ===
+# ---- MAIN EXECUTION
 try {
     $host.UI.RawUI.BackgroundColor = "Black"
     $host.UI.RawUI.ForegroundColor = "Green"
     try { $host.UI.RawUI.CursorVisible = $false } catch {}
     Clear-Host
 
-    # Stage 1: Logo
-    $logo = @"
-M"""""`'"""`YM                   MP""""""`MM                                    dP 
-M  mm.  mm.  M                   M  mmmmm..M                                    88 
-M  MMM  MMM  M 88d888b.          M.      `YM dP  dP  dP .d8888b. 88d888b. .d888b88 
-M  MMM  MMM  M 88'  `88 88888888 MMMMMMM.  M 88  88  88 88'  `88 88'  `88 88'  `88 
-M  MMM  MMM  M 88                M. .MMM'  M 88.88b.88' 88.  .88 88       88.  .88 
-M  MMM  MMM  M dP                Mb.     .dM 8888P Y8P  `88888P' dP       `88888P8 
-MMMMMMMMMMMMMM                   MMMMMMMMMMM 
-"@ -split "`n"
-    Write-Centered $logo "White" 20
-    Start-Sleep -Seconds 1
-    Clear-Host
+    Write-Host "[Info] Video oynatılıyor..." -ForegroundColor DarkGray
+    
+  # Animation 
+    Play-BootSequence -speedMs 50
+    
+    # Erişim onayı/reddi animasyonu
+    Write-Host "SYSTEM: Authenticating user..." -ForegroundColor DarkGray
+    Start-Sleep -Milliseconds 500
+    Write-Host "SYSTEM: Challenge accepted." -ForegroundColor DarkGray
+    Start-Sleep -Milliseconds 600
 
-    # Stage 2: Quote
-    $quote = "Man is least himself when he talks in his own person. Give him a mask, and he will tell you the truth. - Oscar Wilde"
-    Write-Centered (Split-Text $quote ([int]($script:Width / 2))) "Green" 30
-    Start-Sleep -Seconds 4
-    Clear-Host
+    $granted = (Get-Random -Maximum 10) -gt 2
+    Show-Access -Granted:($granted)
+    if ($global:stopRequested) { return }
 
-    # Stage 3: Laughing Skull
-    Play-Intro -durationSeconds 5
-    Clear-Host
-
-    # Stage 4: Access Glitch
-    if ((Get-Random -Maximum 10) -gt 4) {
-        Show-Access -Granted
-    } else {
-        Show-Access
-    }
-
-    # Stage 5: Matrix rain (infinite)
+    # Ve yağmur başlasın
     Start-MatrixRain
 
 } finally {
@@ -421,5 +359,5 @@ MMMMMMMMMMMMMM                   MMMMMMMMMMM
     $host.UI.RawUI.ForegroundColor = $oldFG
     try { $host.UI.RawUI.CursorVisible = $oldCursorVisible } catch {}
     Clear-Host
-    Write-Host "`nCMatrix durduruldu. Konsol ayarları geri yüklendi." -ForegroundColor Cyan
+    Write-Host "`nSession ended. Console settings restored." -ForegroundColor Cyan
 }
